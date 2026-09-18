@@ -124,7 +124,7 @@ model BotConnectionConfig {
   port Int @default(25565)
   version String?
   proxyId String?
-  bot Bot @relation(fields: [botId], references: [botId], onDelete: Cascade)
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
 }
 
 model BotAuthConfig {
@@ -133,7 +133,7 @@ model BotAuthConfig {
   username String
   passwordEncrypted String?
   passwordKeyVersion Int @default(1)
-  bot Bot @relation(fields: [botId], references: [botId], onDelete: Cascade)
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
 }
 
 model BotReconnectConfig {
@@ -144,7 +144,7 @@ model BotReconnectConfig {
   maxAttempts Int @default(10)
   backoff Float @default(2)
   maxBackoff Int @default(300000)
-  bot Bot @relation(fields: [botId], references: [botId], onDelete: Cascade)
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
 }
 
 model MinerConfig {
@@ -153,7 +153,7 @@ model MinerConfig {
   radius Int @default(5)
   searchMode String @default("nearest")
   targetBlocks String[]
-  bot Bot @relation(fields: [botId], references: [botId], onDelete: Cascade)
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
 }
 
 model AntiAfkConfig {
@@ -161,7 +161,7 @@ model AntiAfkConfig {
   enabled Boolean @default(false)
   interval Int @default(60000)
   actionType String @default("look")
-  bot Bot @relation(fields: [botId], references: [botId], onDelete: Cascade)
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
 }
 
 model CommandSchedule {
@@ -208,6 +208,7 @@ model ProxyAssignment {
   proxyId String
   botId String @unique
   proxy Proxy @relation(fields: [proxyId], references: [id], onDelete: Cascade)
+  bot Bot? @relation(fields: [botId], references: [id], onDelete: Cascade)
   @@index([proxyId])
 }
 
