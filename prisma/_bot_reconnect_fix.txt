@@ -1,0 +1,10 @@
+model BotReconnectConfig {
+  botId String @id
+  enabled Boolean @default(true)
+  initialDelay Int @default(5000)
+  retryInterval Int @default(15000)
+  maxAttempts Int @default(10)
+  backoff Float @default(2)
+  maxBackoff Int @default(300000)
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
+}
