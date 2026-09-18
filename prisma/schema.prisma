@@ -1,0 +1,213 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole { USER ADMIN SUPER_ADMIN }
+enum UserStatus { ACTIVE SUSPENDED DISABLED DELETED }
+enum LicenseStatus { ACTIVE EXPIRED SUSPENDED CANCELLED }
+enum BotStatus { STOPPED STARTING CONNECTING ONLINE RECONNECTING STOPPING CRASHED EXPIRED DISABLED }
+enum DesiredState { RUNNING STOPPED }
+enum AuthType { OFFLINE MICROSOFT }
+enum LogLevel { INFO WARN ERROR CHAT SYSTEM CONNECTION AUTOMATION MINER PROXY LICENSE }
+
+enum ProxyProtocol { SOCKS4 SOCKS5 HTTP_CONNECT }
+
+model User {
+  id String @id @default(cuid())
+  email String @unique
+  name String?
+  avatarUrl String?
+  role UserRole @default(USER)
+  status UserStatus @default(ACTIVE)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+  license License?
+  oauthAccounts OAuthAccount[]
+  sessions Session[]
+  bots Bot[]
+  notifications Notification[]
+  auditLogs AuditLog[] @relation("ActorAuditLogs")
+}
+
+model OAuthAccount {
+  id String @id @default(cuid())
+  userId String
+  provider String
+  providerAccountId String
+  accessTokenEncrypted String?
+  refreshTokenEncrypted String?
+  tokenKeyVersion Int @default(1)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id String @id
+  userId String
+  expiresAt DateTime
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, expiresAt])
+}
+
+model License {
+  id String @id @default(cuid())
+  userId String @unique
+  key String @unique @default(cuid())
+  maxBots Int @default(0)
+  proxySlots Int @default(0)
+  startsAt DateTime
+  expiresAt DateTime
+  totalDays Int @default(0)
+  status LicenseStatus @default(EXPIRED)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  history LicenseHistory[]
+  @@index([status, expiresAt])
+}
+
+model LicenseHistory {
+  id String @id @default(cuid())
+  licenseId String
+  actorId String
+  oldValue Json?
+  newValue Json
+  note String?
+  createdAt DateTime @default(now())
+  license License @relation(fields: [licenseId], references: [id], onDelete: Cascade)
+  @@index([licenseId, createdAt])
+}
+
+model Bot {
+  id String @id @default(cuid())
+  userId String
+  name String
+  status BotStatus @default(STOPPED)
+  desiredState DesiredState @default(STOPPED)
+  configVersion Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connection BotConnectionConfig?
+  auth BotAuthConfig?
+  reconnect BotReconnectConfig?
+  miner MinerConfig?
+  antiAfk AntiAfkConfig?
+  schedules CommandSchedule[]
+  logs BotLog[]
+  @@index([userId, status])
+}
+
+model BotConnectionConfig {
+  botId String @id
+  host String
+  port Int @default(25565)
+  version String?
+  proxyId String?
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
+}
+model BotAuthConfig {
+  botId String @id
+  authType AuthType @default(OFFLINE)
+  username String
+  passwordEncrypted String?
+  passwordKeyVersion Int @default(1)
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
+}
+model BotReconnectConfig {
+  botId String @id
+  enabled Boolean @default(true)
+  initialDelay Int @default(5000)
+  retryInterval Int @default(15000)
+  maxAttempts Int @default(10)
+  backoff Float @default(2)
+  maxBackoff Int @default(300000)
+  bot Bot @relation(fields: [botId], references: [botId], onDelete: Cascade)
+}
+model MinerConfig {
+  botId String @id
+  enabled Boolean @default(false)
+  radius Int @default(5)
+  searchMode String @default("nearest")
+  targetBlocks String[]
+  bot Bot @relation(fields: [botId], references: [botId], onDelete: Cascade)
+}
+model AntiAfkConfig {
+  botId String @id
+  enabled Boolean @default(false)
+  interval Int @default(60000)
+  actionType String @default("look")
+  bot Bot @relation(fields: [botId], references: [botId], onDelete: Cascade)
+}
+model CommandSchedule {
+  id String @id @default(cuid())
+  botId String
+  command String
+  enabled Boolean @default(true)
+  initialDelay Int @default(0)
+  interval Int
+  repeatCount Int?
+  onSpawn Boolean @default(true)
+  onReconnect Boolean @default(false)
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
+  @@index([botId, enabled])
+}
+model BotLog {
+  id BigInt @id @default(autoincrement())
+  botId String
+  level LogLevel
+  message String
+  createdAt DateTime @default(now())
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
+  @@index([botId, createdAt])
+}
+model Proxy {
+  id String @id @default(cuid())
+  host String
+  port Int
+  protocol ProxyProtocol
+  username String?
+  encryptedPassword String?
+  country String?
+  enabled Boolean @default(true)
+  maxAssignments Int @default(1)
+  failureCount Int @default(0)
+  createdAt DateTime @default(now())
+  assignments ProxyAssignment[]
+}
+model ProxyAssignment {
+  id String @id @default(cuid())
+  proxyId String
+  botId String @unique
+  proxy Proxy @relation(fields: [proxyId], references: [id], onDelete: Cascade)
+  @@index([proxyId])
+}
+model Notification {
+  id String @id @default(cuid())
+  userId String
+  type String
+  message String
+  readAt DateTime?
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, readAt, createdAt])
+}
+model AuditLog {
+  id BigInt @id @default(autoincrement())
+  actorId String?
+  action String
+  targetType String
+  targetId String
+  oldValue Json?
+  newValue Json?
+  createdAt DateTime @default(now())
+  actor User? @relation("ActorAuditLogs", fields: [actorId], references: [id], onDelete: SetNull)
+  @@index([targetType, targetId, createdAt])
+}
