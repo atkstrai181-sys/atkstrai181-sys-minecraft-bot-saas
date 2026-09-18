@@ -1,14 +1,14 @@
 {
   "name": "minecraft-bot-saas",
   "private": true,
-  "workspaces": ["apps/api", "apps/web"],
+  "workspaces": ["apps/api", "apps/web", "apps/bot-engine"],
   "scripts": {
     "dev": "concurrently \"npm run dev -w apps/api\" \"npm run dev -w apps/web\"",
-    "build": "npm run build -w apps/api && npm run build -w apps/web",
+    "build": "npm run build -w apps/api && npm run build -w apps/web && npm run build -w apps/bot-engine",
     "db:generate": "prisma generate --schema prisma/schema.prisma",
     "db:migrate": "prisma migrate dev --schema prisma/schema.prisma",
     "db:studio": "prisma studio --schema prisma/schema.prisma",
-    "test": "npm run test -w apps/api"
+    "test": "npm run test -w apps/api && npm run test -w apps/bot-engine"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
