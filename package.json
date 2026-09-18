@@ -1,14 +1,29 @@
 {
   "name": "minecraft-bot-saas",
   "private": true,
-  "workspaces": ["apps/api", "apps/web", "apps/bot-engine"],
+  "packageManager": "npm@10",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
+  "workspaces": [
+    "apps/api",
+    "apps/web",
+    "apps/bot-engine"
+  ],
   "scripts": {
-    "dev": "concurrently \"npm run dev -w apps/api\" \"npm run dev -w apps/web\"",
-    "build": "npm run build -w apps/api && npm run build -w apps/web && npm run build -w apps/bot-engine",
+    "dev": "concurrently --kill-others-on-fail \"npm run dev -w @minecraft-bot/api\" \"npm run dev -w @minecraft-bot/web\"",
+    "build": "npm run build:engine && npm run build:api && npm run build:web",
+    "build:engine": "npm run build -w @minecraft-bot/engine",
+    "build:api": "npm run build -w @minecraft-bot/api",
+    "build:web": "npm run build -w @minecraft-bot/web",
+    "typecheck": "npm run typecheck -w @minecraft-bot/api && npm run typecheck -w @minecraft-bot/web && npm run typecheck -w @minecraft-bot/engine",
+    "test": "npm run test -w @minecraft-bot/api && npm run test -w @minecraft-bot/engine",
     "db:generate": "prisma generate --schema prisma/schema.prisma",
+    "db:validate": "prisma validate --schema prisma/schema.prisma",
     "db:migrate": "prisma migrate dev --schema prisma/schema.prisma",
-    "db:studio": "prisma studio --schema prisma/schema.prisma",
-    "test": "npm run test -w apps/api && npm run test -w apps/bot-engine"
+    "db:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
+    "db:studio": "prisma studio --schema prisma/schema.prisma"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
