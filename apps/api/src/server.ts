@@ -1,34 +1,42 @@
+import { randomBytes } from 'node:crypto';
 import Fastify, { type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
+import sensible from '@fastify/sensible';
 import websocket from '@fastify/websocket';
 import { PrismaClient, BotStatus, DesiredState, LicenseStatus, UserStatus } from '@prisma/client';
 import { z } from 'zod';
 
 const prisma = new PrismaClient();
 const app = Fastify({ logger: true });
+const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 
 declare module 'fastify' { interface FastifyRequest { userId: string } }
-
 const idParam = z.object({ id: z.string().cuid() });
-const createBot = z.object({ name: z.string().trim().min(1).max(64), host: z.string().min(1).max(255), port: z.number().int().min(1).max(65535).default(25565), username: z.string().min(1).max(64), authType: z.enum(['OFFLINE', 'MICROSOFT']).default('OFFLINE') });
+const createBot = z.object({ name: z.string().trim().min(1).max(64), host: z.string().trim().min(1).max(255), port: z.number().int().min(1).max(65535).default(25565), username: z.string().trim().min(1).max(64), authType: z.enum(['OFFLINE', 'MICROSOFT']).default('OFFLINE') });
+const scheduleInput = z.object({ command: z.string().trim().regex(/^\/[a-zA-Z0-9_:-]+(?:\s+[^\n]{0,240})?$/), interval: z.number().int().min(10).max(86400), initialDelay: z.number().int().min(0).max(86400).default(0), repeatCount: z.number().int().min(1).max(100000).nullable().default(null), enabled: z.boolean().default(true), onSpawn: z.boolean().default(true), onReconnect: z.boolean().default(false) });
 
-// OAuth callback will replace this development identity. Production must set userId from a verified session only.
 async function requireSession(request: FastifyRequest) {
-  const userId = request.cookies.session;
-  if (!userId) throw app.httpErrors.unauthorized();
-  const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, status: true } });
-  if (!user || user.status !== UserStatus.ACTIVE) throw app.httpErrors.forbidden('Account is not active');
-  request.userId = user.id;
+  const sessionId = request.cookies.session;
+  if (!sessionId) throw app.httpErrors.unauthorized();
+  const session = await prisma.session.findUnique({ where: { id: sessionId }, include: { user: { select: { id: true, status: true } } } });
+  if (!session || session.expiresAt <= new Date()) { if (session) await prisma.session.delete({ where: { id: session.id } }); throw app.httpErrors.unauthorized(); }
+  if (session.user.status !== UserStatus.ACTIVE) throw app.httpErrors.forbidden('Account is not active');
+  request.userId = session.user.id;
 }
-
 async function requireEntitlement(userId: string) {
   const license = await prisma.license.findUnique({ where: { userId } });
   if (!license || license.status !== LicenseStatus.ACTIVE || license.expiresAt <= new Date()) throw app.httpErrors.forbidden('Active license required');
   return license;
 }
+async function createSession(userId: string) {
+  const id = randomBytes(32).toString('hex');
+  await prisma.session.create({ data: { id, userId, expiresAt: new Date(Date.now() + SESSION_TTL_MS) } });
+  return id;
+}
 
+app.register(sensible);
 app.register(cors, { origin: process.env.WEB_ORIGIN ?? 'http://localhost:5173', credentials: true });
 app.register(cookie, { secret: process.env.SESSION_SECRET });
 app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
@@ -37,6 +45,16 @@ app.register(websocket);
 app.get('/health/live', async () => ({ status: 'ok' }));
 app.get('/health/ready', async () => { await prisma.$queryRaw`SELECT 1`; return { status: 'ready' }; });
 
+// Development-only session bootstrap. Production must call this only after a verified Google OAuth callback.
+app.post('/api/auth/dev-session', async (request, reply) => {
+  if (process.env.NODE_ENV === 'production') throw app.httpErrors.notFound();
+  const input = z.object({ email: z.string().email(), name: z.string().max(100).optional() }).parse(request.body);
+  const user = await prisma.user.upsert({ where: { email: input.email }, update: { name: input.name }, create: { email: input.email, name: input.name } });
+  const session = await createSession(user.id);
+  reply.setCookie('session', session, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: SESSION_TTL_MS / 1000 });
+  return { id: user.id, email: user.email };
+});
+app.post('/api/auth/logout', { preHandler: requireSession }, async (request, reply) => { const sessionId = request.cookies.session; if (sessionId) await prisma.session.deleteMany({ where: { id: sessionId } }); reply.clearCookie('session', { path: '/' }); return { ok: true }; });
 app.get('/api/me', { preHandler: requireSession }, async (request) => prisma.user.findUnique({ where: { id: request.userId }, select: { id: true, email: true, name: true, role: true, status: true, license: true } }));
 app.get('/api/bots', { preHandler: requireSession }, async (request) => prisma.bot.findMany({ where: { userId: request.userId }, include: { connection: true, auth: { select: { username: true, authType: true } } }, orderBy: { createdAt: 'desc' } }));
 
@@ -48,35 +66,17 @@ app.post('/api/bots', { preHandler: requireSession }, async (request, reply) => 
   const bot = await prisma.bot.create({ data: { userId: request.userId, name: input.name, connection: { create: { host: input.host, port: input.port } }, auth: { create: { username: input.username, authType: input.authType } } }, include: { connection: true, auth: { select: { username: true, authType: true } } } });
   return reply.code(201).send(bot);
 });
-
-app.post('/api/bots/:id/start', { preHandler: requireSession }, async (request) => {
-  const { id } = idParam.parse(request.params);
-  const license = await requireEntitlement(request.userId);
-  const bot = await prisma.bot.findFirst({ where: { id, userId: request.userId } });
-  if (!bot) throw app.httpErrors.notFound();
-  // The entitlement is checked immediately before changing desired state; the worker/runtime checks again.
-  if (license.expiresAt <= new Date()) throw app.httpErrors.forbidden('License expired');
-  return prisma.bot.update({ where: { id }, data: { desiredState: DesiredState.RUNNING, status: BotStatus.STARTING } });
-});
-app.post('/api/bots/:id/stop', { preHandler: requireSession }, async (request) => {
-  const { id } = idParam.parse(request.params);
-  const bot = await prisma.bot.findFirst({ where: { id, userId: request.userId } });
-  if (!bot) throw app.httpErrors.notFound();
-  return prisma.bot.update({ where: { id }, data: { desiredState: DesiredState.STOPPED, status: BotStatus.STOPPING } });
-});
-
+app.post('/api/bots/:id/start', { preHandler: requireSession }, async (request) => { const { id } = idParam.parse(request.params); await requireEntitlement(request.userId); const bot = await prisma.bot.findFirst({ where: { id, userId: request.userId } }); if (!bot) throw app.httpErrors.notFound(); return prisma.bot.update({ where: { id }, data: { desiredState: DesiredState.RUNNING, status: BotStatus.STARTING } }); });
+app.post('/api/bots/:id/stop', { preHandler: requireSession }, async (request) => { const { id } = idParam.parse(request.params); const bot = await prisma.bot.findFirst({ where: { id, userId: request.userId } }); if (!bot) throw app.httpErrors.notFound(); return prisma.bot.update({ where: { id }, data: { desiredState: DesiredState.STOPPED, status: BotStatus.STOPPING } }); });
 app.get('/api/bots/:id/logs', { preHandler: requireSession }, async (request) => { const { id } = idParam.parse(request.params); const bot = await prisma.bot.findFirst({ where: { id, userId: request.userId }, select: { id: true } }); if (!bot) throw app.httpErrors.notFound(); return prisma.botLog.findMany({ where: { botId: id }, orderBy: { createdAt: 'desc' }, take: 200 }); });
+app.get('/api/bots/:id/schedules', { preHandler: requireSession }, async (request) => { const { id } = idParam.parse(request.params); const bot = await prisma.bot.findFirst({ where: { id, userId: request.userId }, select: { id: true } }); if (!bot) throw app.httpErrors.notFound(); return prisma.commandSchedule.findMany({ where: { botId: id }, orderBy: { id: 'asc' } }); });
+app.post('/api/bots/:id/schedules', { preHandler: requireSession }, async (request, reply) => { const { id } = idParam.parse(request.params); await requireEntitlement(request.userId); const bot = await prisma.bot.findFirst({ where: { id, userId: request.userId }, select: { id: true } }); if (!bot) throw app.httpErrors.notFound(); const count = await prisma.commandSchedule.count({ where: { botId: id } }); if (count >= 100) throw app.httpErrors.forbidden('Schedule limit reached'); return reply.code(201).send(await prisma.commandSchedule.create({ data: { botId: id, ...scheduleInput.parse(request.body) } })); });
+app.delete('/api/bots/:id/schedules/:scheduleId', { preHandler: requireSession }, async (request) => { const params = z.object({ id: z.string().cuid(), scheduleId: z.string().cuid() }).parse(request.params); const deleted = await prisma.commandSchedule.deleteMany({ where: { id: params.scheduleId, botId: params.id, bot: { userId: request.userId } } }); if (!deleted.count) throw app.httpErrors.notFound(); return { ok: true }; });
 
-app.get('/api/events', { websocket: true }, (socket, request) => {
-  const userId = request.cookies.session;
-  if (!userId) return socket.close(1008, 'Unauthorized');
-  socket.send(JSON.stringify({ type: 'connected', timestamp: new Date().toISOString() }));
-  socket.on('message', async (raw) => { try { const message = z.object({ type: z.literal('subscribe'), botId: z.string().cuid() }).parse(JSON.parse(raw.toString())); const bot = await prisma.bot.findFirst({ where: { id: message.botId, userId }, select: { id: true } }); if (bot) socket.send(JSON.stringify({ type: 'subscribed', botId: bot.id })); } catch { socket.send(JSON.stringify({ type: 'error', message: 'Invalid subscription' })); } });
-});
+app.get('/api/events', { websocket: true }, (socket, request) => { const sessionId = request.cookies.session; if (!sessionId) return socket.close(1008, 'Unauthorized'); void prisma.session.findUnique({ where: { id: sessionId }, include: { user: { select: { id: true, status: true } } } }).then(session => { if (!session || session.expiresAt <= new Date() || session.user.status !== UserStatus.ACTIVE) return socket.close(1008, 'Unauthorized'); const userId = session.user.id; socket.send(JSON.stringify({ type: 'connected', timestamp: new Date().toISOString() })); socket.on('message', async raw => { try { const message = z.object({ type: z.literal('subscribe'), botId: z.string().cuid() }).parse(JSON.parse(raw.toString())); const bot = await prisma.bot.findFirst({ where: { id: message.botId, userId }, select: { id: true } }); if (bot) socket.send(JSON.stringify({ type: 'subscribed', botId: bot.id })); else socket.send(JSON.stringify({ type: 'error', message: 'Not found' })); } catch { socket.send(JSON.stringify({ type: 'error', message: 'Invalid subscription' })); } }); }); });
 
-async function expireLicenses() { const expired = await prisma.license.findMany({ where: { status: LicenseStatus.ACTIVE, expiresAt: { lte: new Date() } }, select: { userId: true } }); for (const item of expired) { await prisma.$transaction([prisma.license.updateMany({ where: { userId: item.userId, status: LicenseStatus.ACTIVE, expiresAt: { lte: new Date() } }, data: { status: LicenseStatus.EXPIRED } }), prisma.bot.updateMany({ where: { userId: item.userId, status: { not: BotStatus.STOPPED } }, data: { desiredState: DesiredState.STOPPED, status: BotStatus.EXPIRED } })]); } }
-
-const interval = setInterval(() => expireLicenses().catch((error) => app.log.error(error)), 60_000);
-async function shutdown() { clearInterval(interval); await app.close(); await prisma.$disconnect(); }
+async function expireLicenses() { const now = new Date(); const expired = await prisma.license.findMany({ where: { status: LicenseStatus.ACTIVE, expiresAt: { lte: now } }, select: { userId: true } }); for (const { userId } of expired) { await prisma.$transaction([prisma.license.updateMany({ where: { userId, status: LicenseStatus.ACTIVE, expiresAt: { lte: now } }, data: { status: LicenseStatus.EXPIRED } }), prisma.bot.updateMany({ where: { userId, desiredState: DesiredState.RUNNING }, data: { desiredState: DesiredState.STOPPED, status: BotStatus.EXPIRED } }), prisma.notification.create({ data: { userId, type: 'LICENSE_EXPIRED', message: 'Lisansınızın süresi dolmuştur. Botlarınız durduruldu.' } })]); } }
+const interval = setInterval(() => expireLicenses().catch(error => app.log.error(error)), 60_000);
+async function shutdown() { clearInterval(interval); await expireLicenses().catch(error => app.log.error(error)); await app.close(); await prisma.$disconnect(); }
 process.once('SIGTERM', shutdown); process.once('SIGINT', shutdown);
-app.listen({ port: Number(process.env.PORT ?? 3000), host: '0.0.0.0' }).catch((error) => { app.log.error(error); process.exit(1); });
+app.listen({ port: Number(process.env.PORT ?? 3000), host: '0.0.0.0' }).catch(error => { app.log.error(error); process.exit(1); });

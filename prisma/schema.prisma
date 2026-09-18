@@ -14,7 +14,6 @@ enum BotStatus { STOPPED STARTING CONNECTING ONLINE RECONNECTING STOPPING CRASHE
 enum DesiredState { RUNNING STOPPED }
 enum AuthType { OFFLINE MICROSOFT }
 enum LogLevel { INFO WARN ERROR CHAT SYSTEM CONNECTION AUTOMATION MINER PROXY LICENSE }
-
 enum ProxyProtocol { SOCKS4 SOCKS5 HTTP_CONNECT }
 
 model User {
@@ -34,7 +33,6 @@ model User {
   notifications Notification[]
   auditLogs AuditLog[] @relation("ActorAuditLogs")
 }
-
 model OAuthAccount {
   id String @id @default(cuid())
   userId String
@@ -47,7 +45,6 @@ model OAuthAccount {
   @@unique([provider, providerAccountId])
   @@index([userId])
 }
-
 model Session {
   id String @id
   userId String
@@ -55,7 +52,6 @@ model Session {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   @@index([userId, expiresAt])
 }
-
 model License {
   id String @id @default(cuid())
   userId String @unique
@@ -72,7 +68,6 @@ model License {
   history LicenseHistory[]
   @@index([status, expiresAt])
 }
-
 model LicenseHistory {
   id String @id @default(cuid())
   licenseId String
@@ -84,7 +79,6 @@ model LicenseHistory {
   license License @relation(fields: [licenseId], references: [id], onDelete: Cascade)
   @@index([licenseId, createdAt])
 }
-
 model Bot {
   id String @id @default(cuid())
   userId String
@@ -104,7 +98,6 @@ model Bot {
   logs BotLog[]
   @@index([userId, status])
 }
-
 model BotConnectionConfig {
   botId String @id
   host String
