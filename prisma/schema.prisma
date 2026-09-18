@@ -29,10 +29,12 @@ model User {
   license License?
   oauthAccounts OAuthAccount[]
   sessions Session[]
+  oauthStates OAuthState[]
   bots Bot[]
   notifications Notification[]
   auditLogs AuditLog[] @relation("ActorAuditLogs")
 }
+
 model OAuthAccount {
   id String @id @default(cuid())
   userId String
@@ -45,13 +47,28 @@ model OAuthAccount {
   @@unique([provider, providerAccountId])
   @@index([userId])
 }
+
+model OAuthState {
+  id String @id
+  provider String
+  redirectUri String
+  codeVerifier String?
+  userId String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([expiresAt])
+}
+
 model Session {
   id String @id
   userId String
   expiresAt DateTime
+  createdAt DateTime @default(now())
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   @@index([userId, expiresAt])
 }
+
 model License {
   id String @id @default(cuid())
   userId String @unique
@@ -68,6 +85,7 @@ model License {
   history LicenseHistory[]
   @@index([status, expiresAt])
 }
+
 model LicenseHistory {
   id String @id @default(cuid())
   licenseId String
@@ -79,6 +97,7 @@ model LicenseHistory {
   license License @relation(fields: [licenseId], references: [id], onDelete: Cascade)
   @@index([licenseId, createdAt])
 }
+
 model Bot {
   id String @id @default(cuid())
   userId String
@@ -98,22 +117,25 @@ model Bot {
   logs BotLog[]
   @@index([userId, status])
 }
+
 model BotConnectionConfig {
   botId String @id
   host String
   port Int @default(25565)
   version String?
   proxyId String?
-  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
+  bot Bot @relation(fields: [botId], references: [botId], onDelete: Cascade)
 }
+
 model BotAuthConfig {
   botId String @id
   authType AuthType @default(OFFLINE)
   username String
   passwordEncrypted String?
   passwordKeyVersion Int @default(1)
-  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
+  bot Bot @relation(fields: [botId], references: [botId], onDelete: Cascade)
 }
+
 model BotReconnectConfig {
   botId String @id
   enabled Boolean @default(true)
@@ -124,6 +146,7 @@ model BotReconnectConfig {
   maxBackoff Int @default(300000)
   bot Bot @relation(fields: [botId], references: [botId], onDelete: Cascade)
 }
+
 model MinerConfig {
   botId String @id
   enabled Boolean @default(false)
@@ -132,6 +155,7 @@ model MinerConfig {
   targetBlocks String[]
   bot Bot @relation(fields: [botId], references: [botId], onDelete: Cascade)
 }
+
 model AntiAfkConfig {
   botId String @id
   enabled Boolean @default(false)
@@ -139,6 +163,7 @@ model AntiAfkConfig {
   actionType String @default("look")
   bot Bot @relation(fields: [botId], references: [botId], onDelete: Cascade)
 }
+
 model CommandSchedule {
   id String @id @default(cuid())
   botId String
@@ -152,6 +177,7 @@ model CommandSchedule {
   bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
   @@index([botId, enabled])
 }
+
 model BotLog {
   id BigInt @id @default(autoincrement())
   botId String
@@ -161,6 +187,7 @@ model BotLog {
   bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
   @@index([botId, createdAt])
 }
+
 model Proxy {
   id String @id @default(cuid())
   host String
@@ -175,6 +202,7 @@ model Proxy {
   createdAt DateTime @default(now())
   assignments ProxyAssignment[]
 }
+
 model ProxyAssignment {
   id String @id @default(cuid())
   proxyId String
@@ -182,6 +210,7 @@ model ProxyAssignment {
   proxy Proxy @relation(fields: [proxyId], references: [id], onDelete: Cascade)
   @@index([proxyId])
 }
+
 model Notification {
   id String @id @default(cuid())
   userId String
@@ -192,6 +221,7 @@ model Notification {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   @@index([userId, readAt, createdAt])
 }
+
 model AuditLog {
   id BigInt @id @default(autoincrement())
   actorId String?
